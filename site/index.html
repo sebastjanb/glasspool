@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=600, height=600, initial-scale=1, user-scalable=no">
+  <title>Glass Pool</title>
+  <meta name="description" content="Billiards with real spin and cushions. 8-ball against three opponents, 9-ball and trick shots.">
+  <meta name="mrbd-web-app-capable" content="yes">
+  <meta name="theme-color" content="#000000">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-96.png" sizes="96x96">
+  <link rel="icon" href="icon-192.png" sizes="192x192">
+  <link rel="apple-touch-icon" href="icon-192.png" sizes="192x192">
+  <style>
+    /* Additive display: pure black is transparent. */
+    html, body { margin: 0; width: 600px; height: 600px; overflow: hidden; background: #000; }
+    canvas { display: block; width: 600px; height: 600px; outline: none; }
+  </style>
+</head>
+<body>
+  <canvas id="game" width="600" height="600" tabindex="0" aria-label="Glass Pool"></canvas>
+  <script src="kit.js?v=1.0.0"></script>
+  <script src="game.js?v=1.0.0"></script>
+</body>
+</html>
