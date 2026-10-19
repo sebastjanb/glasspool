@@ -1,20 +1,20 @@
-'use strict';
-
 /* Glass Pool — billiards for Meta Ray-Ban Display glasses.
-   Top-down table, balls with real momentum, cushions that lose some speed,
-   follow, draw and side spin on the cue ball.
+   WebGL table under a lamp: wooden rails, felt, leather pockets and glossy
+   numbered balls that roll as they move. The camera sits low behind the cue
+   ball while you aim and rises over the table while the balls run.
      Left / Right   turn the cue 1°; two quick swipes the same way jump to the next ball
      Up / Down      choose spin: none · follow · draw · left · right
      Pinch          start the stroke, pinch again to strike at that power
    Modes: 8-ball against three opponents, 9-ball, and trick shots. */
 
-const VERSION = '1.0.0';
-const { g, label, plate, banner, clamp, lerp, rand, beep, noise, store } = GK;
+import { THREE, makeRenderer, canvasTexture, chaseCamera, frameClock } from './kit3d.js';
+
+const VERSION = '2.0.0';
+const { g, label, clamp, lerp, rand, beep, noise, store } = GK;
 const TAU = Math.PI * 2, DEG = Math.PI / 180;
 
 // Table in centimetres (inside the cushions), drawn 2.1 px per cm.
 const TW = 254, TH = 127, R = 2.86, POCKET = 6.2, SIDE_POCKET = 6.6;
-const S = 2.1, OX = 300 - TW * S / 2, OY = 312 - TH * S / 2;
 const ROLL_DEC = 22;            // cm/s² rolling resistance
 const CUSHION = 0.74;           // speed kept off a cushion
 const MAXV = 520;               // cm/s at full power
@@ -36,7 +36,7 @@ const TRICKS = [
 
 /* ---------------------------------------------------------------- state */
 
-let state = 'menu';       // menu | aim | power | moving | over | trick-done
+let state = 'title';      // title | menu | aim | power | moving | over | trick-done
 let mode, balls, turn, groups, opp, aim, spin, meter, lastSwipe, foulMsg, msg, msgT, shotInfo, potted, trick, trickShots, aiT, winner;
 let pick = { mode: 0, opp: 0, trick: 0 };
 const record = store.get('pool.record', { won: 0, lost: 0, tricks: {} });
@@ -352,144 +352,300 @@ function tick(dt) {
   }
 }
 
-/* -------------------------------------------------------------- drawing */
+/* ------------------------------------------------------------------ scene */
 
-const X = (x) => OX + x * S, Y = (y) => OY + y * S;
+// Table plan is (x along the table, y across) in centimetres; the scene puts it on (x, 0, y).
+const renderer = makeRenderer();
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(52, 1, 1, 3000);
+const chase = chaseCamera(camera);
+const clock = frameClock();
+scene.add(new THREE.HemisphereLight(0xfff4e0, 0x101008, 0.45));
+const lamp = new THREE.SpotLight(0xfff2d8, 9000, 600, 0.9, 0.6, 1.6);
+lamp.position.set(TW / 2, 220, TH / 2);
+lamp.target.position.set(TW / 2, 0, TH / 2);
+scene.add(lamp, lamp.target);
+const fill = new THREE.DirectionalLight(0xffffff, 0.6);
+fill.position.set(-100, 200, 300);
+scene.add(fill);
 
-function drawTable() {
-  // Rails, felt, diamonds, pockets.
-  g.fillStyle = '#4a2a18';
-  g.beginPath(); g.roundRect(X(-14), Y(-14), (TW + 28) * S, (TH + 28) * S, 18); g.fill();
-  g.fillStyle = '#0a3320';     // dim felt: a big bright panel is tiring on an additive display
-  g.fillRect(X(-3), Y(-3), (TW + 6) * S, (TH + 6) * S);
-  g.fillStyle = '#d9c38a';
-  for (let i = 1; i < 8; i++) { if (i === 4) continue; g.fillRect(X(TW * i / 8) - 2, Y(-9) - 2, 4, 4); g.fillRect(X(TW * i / 8) - 2, Y(TH + 9) - 2, 4, 4); }
-  for (let i = 1; i < 4; i++) { g.fillRect(X(-9) - 2, Y(TH * i / 4) - 2, 4, 4); g.fillRect(X(TW + 9) - 2, Y(TH * i / 4) - 2, 4, 4); }
-  // Head string.
-  g.strokeStyle = 'rgba(255,255,255,.12)'; g.lineWidth = 1;
-  g.beginPath(); g.moveTo(X(TW * 0.25), Y(0)); g.lineTo(X(TW * 0.25), Y(TH)); g.stroke();
-  POCKETS.forEach(([px, py], i) => {
-    g.fillStyle = '#000';
-    g.beginPath(); g.arc(X(px), Y(py), (i === 1 || i === 4 ? SIDE_POCKET : POCKET) * S, 0, TAU); g.fill();
-    g.strokeStyle = '#8a6a3a'; g.lineWidth = 2; g.stroke();
+// Felt with a faint weave.
+const feltTex = canvasTexture(256, 256, (c, w, h) => {
+  c.fillStyle = '#1d6a3c'; c.fillRect(0, 0, w, h);
+  for (let i = 0; i < 4000; i++) { c.fillStyle = `rgba(${Math.random() < 0.5 ? '0,0,0' : '255,255,255'},${Math.random() * 0.05})`; c.fillRect(Math.random() * w, Math.random() * h, 1, 1); }
+}, true);
+feltTex.repeat.set(4, 2);
+const felt = new THREE.Mesh(new THREE.PlaneGeometry(TW + 8, TH + 8), new THREE.MeshStandardMaterial({ map: feltTex, roughness: 0.95 }));
+felt.rotation.x = -Math.PI / 2; felt.position.set(TW / 2, 0, TH / 2);
+scene.add(felt);
+// Head string.
+const string = new THREE.Mesh(new THREE.PlaneGeometry(0.4, TH), new THREE.MeshBasicMaterial({ color: 0x4a9a6a, transparent: true, opacity: 0.6 }));
+string.rotation.x = -Math.PI / 2; string.position.set(TW * 0.25, 0.05, TH / 2);
+scene.add(string);
+
+// Cushions (felt-coloured noses) with gaps at the pockets, then the wooden rail.
+const cushMat = new THREE.MeshStandardMaterial({ color: 0x175a32, roughness: 0.9 });
+const woodTex = canvasTexture(256, 32, (c, w, h) => {
+  c.fillStyle = '#5a2e14'; c.fillRect(0, 0, w, h);
+  for (let i = 0; i < 40; i++) { c.strokeStyle = `rgba(${Math.random() < 0.5 ? '30,12,4' : '140,80,40'},.35)`; c.lineWidth = 1 + Math.random() * 2; c.beginPath(); c.moveTo(0, Math.random() * h); c.bezierCurveTo(w / 3, Math.random() * h, w * 2 / 3, Math.random() * h, w, Math.random() * h); c.stroke(); }
+}, true);
+const woodMat = new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.35, metalness: 0.1 });
+const gap = 9;
+for (const [x0, x1, y, horiz] of [[gap, TW / 2 - gap, -2, true], [TW / 2 + gap, TW - gap, -2, true], [gap, TW / 2 - gap, TH + 2, true], [TW / 2 + gap, TW - gap, TH + 2, true], [gap, TH - gap, -2, false], [gap, TH - gap, TW + 2, false]]) {
+  const len = x1 - x0;
+  const m = new THREE.Mesh(new THREE.BoxGeometry(horiz ? len : 4, 3.6, horiz ? 4 : len), cushMat);
+  if (horiz) m.position.set((x0 + x1) / 2, 1.8, y); else m.position.set(y, 1.8, (x0 + x1) / 2);
+  scene.add(m);
+}
+for (const [cx, cz, w, d] of [[TW / 2, -11, TW + 36, 14], [TW / 2, TH + 11, TW + 36, 14], [-11, TH / 2, 14, TH + 8], [TW + 11, TH / 2, 14, TH + 8]]) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, 6, d), woodMat); m.position.set(cx, 2.2, cz); scene.add(m);
+}
+// Diamonds on the rail.
+const dia = new THREE.MeshBasicMaterial({ color: 0xf0e2b8 });
+for (let i = 1; i < 8; i++) if (i !== 4) for (const z of [-11, TH + 11]) { const d = new THREE.Mesh(new THREE.CircleGeometry(0.9, 4), dia); d.rotation.x = -Math.PI / 2; d.position.set(TW * i / 8, 5.3, z); scene.add(d); }
+for (let i = 1; i < 4; i++) for (const x of [-11, TW + 11]) { const d = new THREE.Mesh(new THREE.CircleGeometry(0.9, 4), dia); d.rotation.x = -Math.PI / 2; d.position.set(x, 5.3, TH * i / 4); scene.add(d); }
+// Pockets: dark wells with leather rims.
+for (const [px, py] of POCKETS) {
+  const hole = new THREE.Mesh(new THREE.CircleGeometry(POCKET + 0.6, 24), new THREE.MeshBasicMaterial({ color: 0x020202 }));
+  hole.rotation.x = -Math.PI / 2; hole.position.set(px, 0.08, py); scene.add(hole);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(POCKET + 1.2, 1.2, 8, 24), new THREE.MeshStandardMaterial({ color: 0x24160c, roughness: 0.5 }));
+  rim.rotation.x = -Math.PI / 2; rim.position.set(px, 2.5, py); scene.add(rim);
+}
+// Lamp shade over the table.
+const shade = new THREE.Mesh(new THREE.BoxGeometry(150, 6, 30), new THREE.MeshStandardMaterial({ color: 0x1a3a22, emissive: 0x0a1a10 }));
+shade.position.set(TW / 2, 200, TH / 2); scene.add(shade);
+const glowBar = new THREE.Mesh(new THREE.PlaneGeometry(146, 26), new THREE.MeshBasicMaterial({ color: 0xfff2d0 }));
+glowBar.rotation.x = Math.PI / 2; glowBar.position.set(TW / 2, 196.8, TH / 2); scene.add(glowBar);
+
+/* ------------------------------------------------------------------ balls */
+
+function ballTexture(n) {
+  return canvasTexture(256, 128, (c, w, h) => {
+    const base = ballColour(n);
+    if (n > 8) { c.fillStyle = '#f4f2ea'; c.fillRect(0, 0, w, h); c.fillStyle = base; c.fillRect(0, h * 0.3, w, h * 0.4); }
+    else { c.fillStyle = n === 0 ? '#f4f2ea' : base; c.fillRect(0, 0, w, h); }
+    if (n === 8) { c.fillStyle = '#121212'; c.fillRect(0, 0, w, h); }
+    if (n) for (const u of [0.25, 0.75]) {
+      c.fillStyle = '#f8f6ee'; c.beginPath(); c.ellipse(u * w, h / 2, 17, 26, 0, 0, Math.PI * 2); c.fill();
+      c.fillStyle = '#111'; c.font = `bold ${n > 9 ? 22 : 26}px Georgia, serif`; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillText(String(n), u * w, h / 2 + 1);
+    } else { c.fillStyle = '#c8202a'; for (const u of [0.25, 0.75]) { c.beginPath(); c.arc(u * w, h / 2, 4, 0, Math.PI * 2); c.fill(); } }
   });
 }
-
-function drawBall(b) {
-  const x = X(b.x), y = Y(b.y), r = R * S;
-  const base = ballColour(b.n);
-  if (b.n > 8) {
-    g.fillStyle = '#f2f2f2'; g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill();
-    g.save(); g.beginPath(); g.arc(x, y, r, 0, TAU); g.clip();
-    g.fillStyle = base; g.fillRect(x - r, y - r * 0.55, r * 2, r * 1.1); g.restore();
-  } else {
-    g.fillStyle = base; g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill();
+const ballGeo = new THREE.SphereGeometry(R, 28, 20);
+const ballMeshes = [];
+function meshForBall(b) {
+  if (!ballMeshes[b.n]) {
+    const m = new THREE.Mesh(ballGeo, new THREE.MeshPhysicalMaterial({ map: ballTexture(b.n), roughness: 0.12, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.05 }));
+    m.quaternion.setFromEuler(new THREE.Euler(Math.random() * 6, Math.random() * 6, 0));
+    m.last = { x: b.x, y: b.y };
+    scene.add(m);
+    ballMeshes[b.n] = m;
   }
-  // The 8 is dark grey with a white rim: pure black would vanish on the glasses.
-  if (b.n === 8) { g.strokeStyle = '#d0d0d0'; g.lineWidth = 1.5; g.beginPath(); g.arc(x, y, r - 0.7, 0, TAU); g.stroke(); }
-  if (b.n) {
-    g.fillStyle = '#fff'; g.beginPath(); g.arc(x, y, r * 0.48, 0, TAU); g.fill();
-    g.font = `700 ${Math.round(r * 0.75)}px ${GK.FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = '#111';
-    g.fillText(String(b.n), x, y + 0.5);
-  }
-  g.fillStyle = 'rgba(255,255,255,.55)'; g.beginPath(); g.arc(x - r * 0.35, y - r * 0.35, r * 0.2, 0, TAU); g.fill();
+  return ballMeshes[b.n];
+}
+const shadows = [];
+const shadowTex = canvasTexture(64, 64, (c) => { const grd = c.createRadialGradient(32, 32, 4, 32, 32, 30); grd.addColorStop(0, 'rgba(0,0,0,.55)'); grd.addColorStop(1, 'rgba(0,0,0,0)'); c.fillStyle = grd; c.fillRect(0, 0, 64, 64); });
+function shadowFor(i) {
+  if (!shadows[i]) { const s = new THREE.Mesh(new THREE.PlaneGeometry(R * 3, R * 3), new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false })); s.rotation.x = -Math.PI / 2; scene.add(s); shadows[i] = s; }
+  return shadows[i];
 }
 
-function aimGuide() {
-  // Line to the first ball in the way, the ghost ball, and where the object ball goes.
-  const c = cue();
-  const dx = Math.cos(aim), dy = Math.sin(aim);
+// Cue: a tapered shaft with a dark butt and a white ferrule.
+const cueStick = new THREE.Group();
+{
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.65, 1.3, 145, 12), new THREE.MeshStandardMaterial({ color: 0xe8c890, roughness: 0.4 }));
+  shaft.rotation.z = Math.PI / 2; shaft.position.x = -72.5; cueStick.add(shaft);
+  const butt = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.5, 45, 12), new THREE.MeshStandardMaterial({ color: 0x2a140a, roughness: 0.3 }));
+  butt.rotation.z = Math.PI / 2; butt.position.x = -122; cueStick.add(butt);
+  const tip = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.62, 2, 12), new THREE.MeshStandardMaterial({ color: 0xf6f6f6 }));
+  tip.rotation.z = Math.PI / 2; tip.position.x = -1; cueStick.add(tip);
+}
+scene.add(cueStick);
+
+// Aim guide: dashed line to contact, ghost ring, and the object ball's path.
+const guideMat = new THREE.LineDashedMaterial({ color: 0x7fe8c8, dashSize: 2.5, gapSize: 2, transparent: true, opacity: 0.9 });
+const guideGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(1, 0, 0)]);
+const guide = new THREE.Line(guideGeo, guideMat); scene.add(guide);
+const ghost = new THREE.Mesh(new THREE.RingGeometry(R - 0.3, R + 0.2, 32), new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide, transparent: true, opacity: 0.8 }));
+ghost.rotation.x = -Math.PI / 2; scene.add(ghost);
+const objGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(1, 0, 0)]);
+const objLine = new THREE.Line(objGeo, new THREE.LineBasicMaterial({ color: 0xffffff })); scene.add(objLine);
+
+function contact() {
+  const c = cue(), dx = Math.cos(aim), dy = Math.sin(aim);
   let bestT = Infinity, hitBall = null;
   for (const b of balls) {
     if (!b.on || b === c) continue;
-    const fx = b.x - c.x, fy = b.y - c.y;
-    const t = fx * dx + fy * dy;
+    const fx = b.x - c.x, fy = b.y - c.y, t = fx * dx + fy * dy;
     if (t <= 0) continue;
     const off2 = fx * fx + fy * fy - t * t;
     if (off2 > 4 * R * R) continue;
     const th = t - Math.sqrt(4 * R * R - off2);
     if (th < bestT) { bestT = th; hitBall = b; }
   }
-  // Or a cushion.
   let wallT = Infinity;
   if (dx > 0) wallT = Math.min(wallT, (TW - R - c.x) / dx); if (dx < 0) wallT = Math.min(wallT, (R - c.x) / dx);
   if (dy > 0) wallT = Math.min(wallT, (TH - R - c.y) / dy); if (dy < 0) wallT = Math.min(wallT, (R - c.y) / dy);
   const t = Math.min(bestT, wallT);
-  const ex = c.x + dx * t, ey = c.y + dy * t;
-  g.setLineDash([6, 6]); g.strokeStyle = 'rgba(255,255,255,.75)'; g.lineWidth = 1.5;
-  g.beginPath(); g.moveTo(X(c.x), Y(c.y)); g.lineTo(X(ex), Y(ey)); g.stroke(); g.setLineDash([]);
-  g.strokeStyle = 'rgba(255,255,255,.8)';
-  g.beginPath(); g.arc(X(ex), Y(ey), R * S, 0, TAU); g.stroke();
-  if (hitBall && bestT <= wallT) {
-    const nx = hitBall.x - ex, ny = hitBall.y - ey, nl = Math.hypot(nx, ny);
-    g.strokeStyle = ballColour(hitBall.n); g.lineWidth = 2.5;
-    g.beginPath(); g.moveTo(X(hitBall.x), Y(hitBall.y)); g.lineTo(X(hitBall.x + nx / nl * 40), Y(hitBall.y + ny / nl * 40)); g.stroke();
+  return { ex: c.x + dx * t, ey: c.y + dy * t, ball: bestT <= wallT ? hitBall : null };
+}
+
+/* ----------------------------------------------------------------- render */
+
+const want = new THREE.Vector3(), at = new THREE.Vector3(), _ax = new THREE.Vector3(), _q = new THREE.Quaternion();
+let menuA = 0;
+
+function render3d(now) {
+  const dt = clock(now);
+  if (!balls) balls = rack8();
+  balls.forEach((b, i) => {
+    const m = meshForBall(b);
+    m.visible = b.on;
+    const sh = shadowFor(i); sh.visible = b.on;
+    if (!b.on) { m.last = { x: b.x, y: b.y }; return; }
+    // Roll: turn about the axis across the direction of travel by distance / radius.
+    const dx = b.x - m.last.x, dy = b.y - m.last.y, d = Math.hypot(dx, dy);
+    if (d > 0.001 && d < 50) { _ax.set(dy, 0, -dx).normalize(); _q.setFromAxisAngle(_ax, d / R); m.quaternion.premultiply(_q); }
+    m.last = { x: b.x, y: b.y };
+    m.position.set(b.x, R, b.y);
+    sh.position.set(b.x + 0.8, 0.06, b.y + 0.8);
+  });
+  const c = cue();
+  const aiming = (state === 'aim' || state === 'power') && c.on;
+  cueStick.visible = guide.visible = ghost.visible = aiming || state === 'ai';
+  objLine.visible = false;
+  if (cueStick.visible) {
+    const pull = state === 'power' ? 4 + meter.pos * 26 : 4;
+    cueStick.position.set(c.x - Math.cos(aim) * (R + pull), R + 1.2, c.y - Math.sin(aim) * (R + pull));
+    cueStick.rotation.set(0, -aim, 0.06);
+    const k = contact();
+    guideGeo.setFromPoints([new THREE.Vector3(c.x, R * 0.4, c.y), new THREE.Vector3(k.ex, R * 0.4, k.ey)]);
+    guide.computeLineDistances();
+    ghost.position.set(k.ex, 0.1, k.ey);
+    if (k.ball) {
+      const nx = k.ball.x - k.ex, ny = k.ball.y - k.ey, nl = Math.hypot(nx, ny);
+      objGeo.setFromPoints([new THREE.Vector3(k.ball.x, R * 0.4, k.ball.y), new THREE.Vector3(k.ball.x + nx / nl * 40, R * 0.4, k.ball.y + ny / nl * 40)]);
+      objLine.material.color.set(ballColour(k.ball.n));
+      objLine.visible = true;
+    }
+    guide.visible = ghost.visible = state !== 'ai';
   }
-  // The cue itself.
-  const back = state === 'power' ? 6 + meter.pos * 30 : 6;
-  g.strokeStyle = '#d9b27a'; g.lineWidth = 5; g.lineCap = 'round';
-  g.beginPath(); g.moveTo(X(c.x - dx * (R + back)), Y(c.y - dy * (R + back))); g.lineTo(X(c.x - dx * (R + back + 110)), Y(c.y - dy * (R + back + 110))); g.stroke();
-  g.lineCap = 'butt';
+  // Camera: low behind the cue ball when you aim, high over the table while balls roll.
+  if (state === 'title' || state === 'menu') {
+    menuA += dt * 0.15;
+    want.set(TW / 2 + Math.cos(menuA) * 210, 120, TH / 2 + Math.sin(menuA) * 170); at.set(TW / 2, 0, TH / 2);
+    chase.update(want, at, dt, 2);
+  } else if (aiming && turn === 0) {
+    want.set(c.x - Math.cos(aim) * 62, 26, c.y - Math.sin(aim) * 62);
+    at.set(c.x + Math.cos(aim) * 70, 0, c.y + Math.sin(aim) * 70);
+    chase.update(want, at, dt, 7);
+  } else {
+    want.set(TW / 2, 230, TH / 2 + 150); at.set(TW / 2, 0, TH / 2 + 8);
+    chase.update(want, at, dt, 2.5);
+  }
+  renderer.render(scene, camera);
+}
+
+/* -------------------------------------------------------------------- HUD */
+
+const TEAL = '#5ee8c0';
+const serif = (size, w = 700, italic = true) => `${italic ? 'italic ' : ''}${w} ${size}px Georgia, "Playfair Display", "Times New Roman", serif`;
+const sans = (size, w = 700) => `${w} ${size}px "Avenir Next", "Helvetica Neue", ${GK.FONT}`;
+function tt(t, x, y, font, colour = '#fff', align = 'left') { g.font = font; g.textAlign = align; g.fillStyle = colour; g.fillText(t, x, y); }
+
+function hud(now) {
+  if (mode === 'trick') {
+    tt(trick.name, 26, 46, serif(26), TEAL);
+    tt(trick.hint, 26, 72, sans(15, 600), '#e8eef6');
+    tt('Shot ' + (trickShots + 1) + ' of ' + trick.shots, 574, 46, sans(15), '#e8eef6', 'right');
+  } else {
+    const yours = turn === 0;
+    if (yours) { g.fillStyle = TEAL; g.beginPath(); g.moveTo(24, 30); g.lineTo(32, 37); g.lineTo(24, 44); g.fill(); }
+    tt('You', 40, 46, serif(28), yours ? TEAL : '#c3c7cd');
+    g.fillStyle = yours ? TEAL : 'rgba(255,255,255,.2)'; g.fillRect(24, 56, 170, 2);
+    tt(opp.name, 576, 46, serif(28), yours ? '#c3c7cd' : TEAL, 'right');
+    g.fillStyle = yours ? 'rgba(255,255,255,.2)' : TEAL; g.fillRect(406, 56, 170, 2);
+    let sub;
+    if (mode === '9') sub = 'Ball on: ' + Math.min(...live().map((b) => b.n));
+    else sub = groups[0] ? (groups[0] === 'solid' ? 'Solids' : 'Stripes') : potted.length ? 'Open table' : 'To break';
+    tt(sub, 24, 84, sans(17, 600), '#e8eef6');
+  }
+  // Spin dial.
+  const sx = 70, sy = 530;
+  g.strokeStyle = '#ffffff'; g.lineWidth = 2.5; g.beginPath(); g.arc(sx, sy, 34, 0, Math.PI * 2); g.stroke();
+  g.beginPath(); g.moveTo(sx - 44, sy); g.lineTo(sx + 44, sy); g.moveTo(sx, sy - 44); g.lineTo(sx, sy + 44); g.stroke();
+  const off = { none: [0, 0], follow: [0, -20], draw: [0, 20], left: [-20, 0], right: [20, 0] }[SPINS[spin]];
+  g.fillStyle = TEAL; g.beginPath(); g.arc(sx + off[0], sy + off[1], 9, 0, Math.PI * 2); g.fill();
+  tt('SPIN', 130, 522, sans(16, 800), '#fff');
+  tt({ none: 'Center', follow: 'Follow', draw: 'Draw', left: 'Left', right: 'Right' }[SPINS[spin]], 130, 548, sans(20, 700), '#fff');
+  // Power.
+  const pw = state === 'power' ? meter.pos : 0;
+  tt('POWER', 450, 508, sans(16, 800), '#fff', 'right');
+  tt(Math.round(pw * 100) + '%', 450, 548, serif(36), '#fff', 'right');
+  for (let i = 0; i < 10; i++) { g.fillStyle = (9 - i) / 10 < pw ? (i < 2 ? '#ffffff' : TEAL) : 'rgba(255,255,255,.15)'; g.fillRect(470, 474 + i * 10, 34, 7); }
+  tt(state === 'power' ? 'Pinch to shoot' : state === 'ai' ? opp.name + ' is lining up…' : '', 450, 578, sans(15, 700), TEAL, 'right');
+  if (state === 'aim' && turn === 0 && shotCount < 2) {
+    g.fillStyle = 'rgba(14,18,20,.88)'; g.beginPath(); g.roundRect(120, 130, 360, 84, 14); g.fill();
+    tt('Swipe left or right to aim,', 300, 160, sans(16, 600), '#fff', 'center');
+    tt('twice quickly to jump to a ball. Up / down', 300, 182, sans(16, 600), '#fff', 'center');
+    tt('for spin. Pinch for power.', 300, 204, sans(16, 600), TEAL, 'center');
+  }
+  if (msgT > 0) { g.fillStyle = 'rgba(14,18,20,.88)'; g.beginPath(); g.roundRect(110, 236, 380, 50, 14); g.fill(); tt(msg, 300, 269, sans(19, 800), msg.startsWith('FOUL') ? '#ff8a8a' : '#ffd34d', 'center'); }
+}
+let shotCount = 0;
+
+function panel(now, title, lines, prompt) {
+  g.fillStyle = 'rgba(16,20,22,.92)'; g.beginPath(); g.roundRect(70, 190, 460, 110 + lines.length * 28, 16); g.fill();
+  g.strokeStyle = TEAL; g.lineWidth = 2; g.stroke();
+  tt(title, 300, 240, serif(36), '#fff', 'center');
+  lines.forEach((t, i) => tt(t, 300, 274 + i * 28, sans(17, 600), '#e8eef6', 'center'));
+  if (GK.blink(now)) tt(prompt, 300, 274 + lines.length * 28 + 18, sans(17, 800), TEAL, 'center');
+}
+
+const MODES = ['8', '9', 'trick'];
+const MENU = () => [
+  { t: '8-Ball', s: () => 'Against ' + OPPONENTS[pick.opp].name + ' · ‹ › opponent · record ' + record.won + '–' + record.lost, act: () => startGame('8'), side: (d) => (pick.opp = (pick.opp + d + 3) % 3) },
+  { t: 'Trick Shots', s: () => TRICKS[pick.trick].name + (record.tricks[TRICKS[pick.trick].name] ? ' ✓' : '') + ' · ‹ › setup · ' + Object.keys(record.tricks).length + ' of ' + TRICKS.length + ' done', act: () => startGame('trick'), side: (d) => (pick.trick = (pick.trick + d + TRICKS.length) % TRICKS.length) },
+  { t: '9-Ball', s: () => 'Lowest ball first, then sink the 9', act: () => startGame('9'), side: (d) => (pick.opp = (pick.opp + d + 3) % 3) },
+  { t: 'Sound', s: () => (GK.sound.on ? 'On' : 'Off'), act: () => GK.setSound(!GK.sound.on), side: () => GK.setSound(!GK.sound.on) },
+];
+let menuI = 0;
+
+function titleScreen() {
+  g.fillStyle = 'rgba(0,0,0,.4)'; g.fillRect(0, 0, 600, 600);
+  tt('Billiards', 300, 250, serif(78, 900), '#fff', 'center');
+  tt('8-ball · 9-ball · trick shots', 300, 292, sans(18, 600), TEAL, 'center');
+  g.fillStyle = 'rgba(16,20,22,.9)'; g.beginPath(); g.roundRect(190, 400, 220, 60, 14); g.fill(); g.strokeStyle = TEAL; g.lineWidth = 2; g.stroke();
+  tt('Pinch to play', 300, 438, sans(20, 800), '#fff', 'center');
+}
+
+function menuScreen() {
+  g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(0, 0, 600, 600);
+  tt('Billiards', 30, 52, serif(30), '#fff');
+  tt('MAIN MENU', 570, 48, sans(15, 800), '#e8eef6', 'right');
+  MENU().forEach((it, i) => {
+    const y = 84 + i * 104, on = i === menuI;
+    g.fillStyle = 'rgba(22,26,28,.92)'; g.beginPath(); g.roundRect(on ? 30 : 40, y, on ? 540 : 520, 90, 14); g.fill();
+    if (on) { g.strokeStyle = TEAL; g.lineWidth = 2.5; g.stroke(); }
+    tt(it.t, on ? 52 : 62, y + 42, serif(28), on ? '#fff' : '#c8ccd0');
+    tt(it.s(), on ? 52 : 62, y + 72, sans(14, 600), '#c3c7cd');
+  });
+  tt('Swipe up or down to choose, pinch to open', 300, 528, sans(15, 600), '#fff', 'center');
 }
 
 function render(now) {
-  g.fillStyle = '#000'; g.fillRect(0, 0, 600, 600);
-  if (!balls) { balls = rack8(); }
-  drawTable();
-  for (const b of balls) if (b.on) drawBall(b);
-  if (state === 'menu') return GK.drawMenu(menu, now, 120);
-  if (state === 'aim' || state === 'power') aimGuide();
+  render3d(now);
+  g.clearRect(0, 0, 600, 600);
+  if (state === 'title') return titleScreen();
+  if (state === 'menu') return menuScreen();
   hud(now);
-  if (state === 'over') banner(now, winner === 0 ? 'YOU WIN' : 'YOU LOSE', winner === 0 ? '#4fe3a0' : '#ff6b6b', 'Pinch for the menu', [foulMsg, 'Record ' + record.won + ' – ' + record.lost]);
-  if (state === 'trick-done') banner(now, winner === 0 ? 'MADE IT' : 'MISSED', winner === 0 ? '#4fe3a0' : '#ff6b6b', 'Pinch to try again', [trick.hint, 'Down: back to the menu']);
+  if (state === 'over') panel(now, winner === 0 ? 'You win' : 'You lose', [foulMsg, 'Record ' + record.won + ' – ' + record.lost], 'Pinch for the menu');
+  if (state === 'trick-done') panel(now, winner === 0 ? 'Made it' : 'Missed', [trick.hint, 'Down: back to the menu'], 'Pinch to try again');
 }
 
-function hud(now) {
-  // Top: whose turn, groups or the ball on.
-  plate(12, 8, 576, 54, 14);
-  if (mode === 'trick') {
-    label(trick.name.toUpperCase(), 24, 42, 20, '#4fe3a0');
-    label(trick.hint, 576, 42, 15, '#c3c7cd', 'right', 600);
-  } else {
-    const yourTurn = turn === 0;
-    label(yourTurn ? 'YOUR SHOT' : opp.name.toUpperCase() + ' TO SHOOT', 24, 42, 20, yourTurn ? '#4fe3a0' : '#ffb35c');
-    let right;
-    if (mode === '9') right = 'Ball on: ' + Math.min(...live().map((b) => b.n));
-    else right = groups[0] ? 'You: ' + (groups[0] === 'solid' ? 'solids' : 'stripes') : 'Open table';
-    label(right, 576, 42, 16, '#e8eef6', 'right');
-  }
-  // Bottom: spin and power.
-  plate(12, 530, 576, 58, 14);
-  // Cue ball face with the spin point.
-  const sx = 52, sy = 559;
-  g.fillStyle = '#f2f2f2'; g.beginPath(); g.arc(sx, sy, 20, 0, TAU); g.fill();
-  const off = { none: [0, 0], follow: [0, -11], draw: [0, 11], left: [-11, 0], right: [11, 0] }[SPINS[spin]];
-  g.fillStyle = '#e23a3a'; g.beginPath(); g.arc(sx + off[0], sy + off[1], 5, 0, TAU); g.fill();
-  label('Spin: ' + SPINS[spin], 84, 566, 16, '#e8eef6', 'left', 600);
-  if (state === 'power') {
-    g.fillStyle = 'rgba(255,255,255,.15)'; g.fillRect(260, 548, 300, 20);
-    g.fillStyle = meter.pos > 0.85 ? '#ff6b6b' : '#4fe3a0'; g.fillRect(260, 548, 300 * meter.pos, 20);
-    label('Pinch to strike', 410, 543, 13, '#a9adb3', 'center');
-  } else if (state === 'aim') label('Pinch to start the stroke', 410, 566, 15, '#a9adb3', 'center', 600);
-  else if (state === 'ai') label(opp.name + ' is lining up…', 410, 566, 15, '#ffb35c', 'center', 600);
-  if (msgT > 0) { plate(100, 250, 400, 50, 14, 'rgba(0,0,0,.8)'); label(msg, 300, 283, 20, msg.startsWith('FOUL') ? '#ff6b6b' : '#ffd34d', 'center'); }
-}
-
-/* ---------------------------------------------------------------- menu */
-
-const MODES = ['8', '9', 'trick'];
-const menu = GK.menu('GLASS POOL', '#4fe3a0', [
-  { text: () => 'Game · ' + ['8-ball', '9-ball', 'Trick shots'][pick.mode], hint: 'Left / Right: game',
-    left: () => (pick.mode = (pick.mode + 2) % 3), right: () => (pick.mode = (pick.mode + 1) % 3), act: () => startGame(MODES[pick.mode]) },
-  { text: () => pick.mode === 2 ? 'Trick · ' + TRICKS[pick.trick].name + (record.tricks[TRICKS[pick.trick].name] ? '  ✓' : '') : 'Opponent · ' + OPPONENTS[pick.opp].name,
-    hint: () => pick.mode === 2 ? TRICKS[pick.trick].hint : 'Record ' + record.won + ' – ' + record.lost,
-    left: () => { if (pick.mode === 2) pick.trick = (pick.trick + TRICKS.length - 1) % TRICKS.length; else pick.opp = (pick.opp + 2) % 3; },
-    right: () => { if (pick.mode === 2) pick.trick = (pick.trick + 1) % TRICKS.length; else pick.opp = (pick.opp + 1) % 3; },
-    act: () => startGame(MODES[pick.mode]) },
-  { text: () => 'Sound · ' + (GK.sound.on ? 'on' : 'off'), act: () => GK.setSound(!GK.sound.on) },
-]);
-
-/* --------------------------------------------------------------- input */
+/* ------------------------------------------------------------------ input */
 
 function nextBall(dir) {
   // Jump the aim to the next ball round the cue ball in that direction.
@@ -505,7 +661,16 @@ function nextBall(dir) {
 }
 
 GK.input.onKey = (k) => {
-  if (state === 'menu') return GK.menuKey(menu, k);
+  if (state === 'title') { if (k === 'Enter') state = 'menu'; return; }
+  if (state === 'menu') {
+    const items = MENU();
+    if (k === 'ArrowUp') menuI = (menuI + items.length - 1) % items.length;
+    else if (k === 'ArrowDown') menuI = (menuI + 1) % items.length;
+    else if (k === 'ArrowLeft' || k === 'ArrowRight') items[menuI].side(k === 'ArrowLeft' ? -1 : 1);
+    else if (k === 'Enter') { shotCount = 0; items[menuI].act(); }
+    beep(560, 0.03);
+    return;
+  }
   if (state === 'over') { if (k === 'Enter') state = 'menu'; return; }
   if (state === 'trick-done') { if (k === 'Enter') startGame('trick'); else if (k === 'ArrowDown') state = 'menu'; return; }
   if (state === 'aim') {
@@ -521,7 +686,9 @@ GK.input.onKey = (k) => {
     else if (k === 'Enter') { meter = { t: 0, pos: 0 }; state = 'power'; }
     return;
   }
-  if (state === 'power' && k === 'Enter') strike(Math.max(0.05, meter.pos), spin);
+  if (state === 'power' && k === 'Enter') { shotCount++; strike(Math.max(0.05, meter.pos), spin); }
 };
 
 GK.run(tick, render);
+
+window.pool = { get state() { return state; }, set state(x) { state = x; }, startGame, tick, planShot, aiShoot, strike, legalTargets, get balls() { return balls; }, set aim(v) { aim = v; }, get winner() { return winner; }, cue, set pick(p) { Object.assign(pick, p); } };

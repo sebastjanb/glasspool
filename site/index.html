@@ -14,12 +14,13 @@
   <style>
     /* Additive display: pure black is transparent. */
     html, body { margin: 0; width: 600px; height: 600px; overflow: hidden; background: #000; }
-    canvas { display: block; width: 600px; height: 600px; outline: none; }
+    canvas { display: block; width: 600px; height: 600px; outline: none; position: absolute; left: 0; top: 0; }
   </style>
 </head>
 <body>
+  <canvas id="gl" width="600" height="600"></canvas>
   <canvas id="game" width="600" height="600" tabindex="0" aria-label="Glass Pool"></canvas>
-  <script src="kit.js?v=1.0.0"></script>
-  <script src="game.js?v=1.0.0"></script>
+  <script src="kit.js?v=2.0.0"></script>
+  <script type="module" src="game.js?v=2.0.0"></script>
 </body>
 </html>
