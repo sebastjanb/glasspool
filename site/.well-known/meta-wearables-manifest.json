@@ -3,10 +3,23 @@
   "name": "Glass Pool",
   "description": "Billiards with real spin and cushions. 8-ball against three opponents, 9-ball and trick shots.",
   "appearance": {
-    "theme_color": "#4FE3A0",
+    "theme_color": "#FFFFFF",
     "icon": {
       "src": "icon.png",
       "type": "monochrome"
+    },
+    "icon_background": {
+      "colors": [
+        "#2AB86A",
+        "#0A5A32",
+        "#021A0C"
+      ],
+      "stops": [
+        0.0,
+        0.55,
+        1.0
+      ],
+      "inner_glow_color": "#FFD34D"
     }
   }
 }
