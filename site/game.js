@@ -9,7 +9,7 @@
 
 import { THREE, makeRenderer, canvasTexture, chaseCamera, frameClock } from './kit3d.js';
 
-const VERSION = '2.0.0';
+const VERSION = '3.0.0';
 const { g, label, clamp, lerp, rand, beep, noise, store } = GK;
 const TAU = Math.PI * 2, DEG = Math.PI / 180;
 
@@ -365,7 +365,14 @@ scene.add(new THREE.HemisphereLight(0xfff4e0, 0x101008, 0.45));
 const lamp = new THREE.SpotLight(0xfff2d8, 9000, 600, 0.9, 0.6, 1.6);
 lamp.position.set(TW / 2, 220, TH / 2);
 lamp.target.position.set(TW / 2, 0, TH / 2);
+lamp.castShadow = true;
+lamp.shadow.mapSize.set(1024, 1024);
+lamp.shadow.bias = -0.0004;
+lamp.shadow.camera.near = 50; lamp.shadow.camera.far = 400;
 scene.add(lamp, lamp.target);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMappingExposure = 1.1;
 const fill = new THREE.DirectionalLight(0xffffff, 0.6);
 fill.position.set(-100, 200, 300);
 scene.add(fill);
@@ -378,6 +385,7 @@ const feltTex = canvasTexture(256, 256, (c, w, h) => {
 feltTex.repeat.set(4, 2);
 const felt = new THREE.Mesh(new THREE.PlaneGeometry(TW + 8, TH + 8), new THREE.MeshStandardMaterial({ map: feltTex, roughness: 0.95 }));
 felt.rotation.x = -Math.PI / 2; felt.position.set(TW / 2, 0, TH / 2);
+felt.receiveShadow = true;
 scene.add(felt);
 // Head string.
 const string = new THREE.Mesh(new THREE.PlaneGeometry(0.4, TH), new THREE.MeshBasicMaterial({ color: 0x4a9a6a, transparent: true, opacity: 0.6 }));
@@ -418,6 +426,68 @@ shade.position.set(TW / 2, 200, TH / 2); scene.add(shade);
 const glowBar = new THREE.Mesh(new THREE.PlaneGeometry(146, 26), new THREE.MeshBasicMaterial({ color: 0xfff2d0 }));
 glowBar.rotation.x = Math.PI / 2; glowBar.position.set(TW / 2, 196.8, TH / 2); scene.add(glowBar);
 
+
+/* ------------------------------------------------------------------- room */
+
+// A billiard room round the table: plank floor, panelled walls, sconces, a cue rack
+// and the table's own body and legs. Only seen at the edges, but it gives depth.
+const room = new THREE.Group();
+const plankTex = canvasTexture(256, 256, (c, w, h) => {
+  for (let y = 0; y < h; y += 32) { c.fillStyle = ['#3a2414', '#4a2e18', '#33200f', '#422a16'][(y / 32) % 4]; c.fillRect(0, y, w, 32); c.fillStyle = 'rgba(0,0,0,.4)'; c.fillRect(0, y, w, 2); c.fillRect(((y * 7) % w), y, 2, 32); }
+  for (let i = 0; i < 60; i++) { c.strokeStyle = 'rgba(0,0,0,.12)'; c.beginPath(); const y = Math.random() * h; c.moveTo(0, y); c.bezierCurveTo(80, y + 4, 160, y - 4, w, y + 2); c.stroke(); }
+}, true);
+plankTex.repeat.set(10, 10);
+const roomFloor = new THREE.Mesh(new THREE.PlaneGeometry(1400, 1400), new THREE.MeshStandardMaterial({ map: plankTex, roughness: 0.6 }));
+roomFloor.rotation.x = -Math.PI / 2; roomFloor.position.set(TW / 2, -78, TH / 2); roomFloor.receiveShadow = true; room.add(roomFloor);
+const wallTex = canvasTexture(256, 256, (c, w, h) => {
+  c.fillStyle = '#1a2e24'; c.fillRect(0, 0, w, h);
+  for (let x = 0; x < w; x += 16) { c.fillStyle = x % 32 ? 'rgba(255,255,255,.03)' : 'rgba(0,0,0,.08)'; c.fillRect(x, 0, 8, h * 0.62); }
+  c.fillStyle = '#3a2414'; c.fillRect(0, h * 0.62, w, h * 0.38);
+  c.strokeStyle = '#5a3a20'; c.lineWidth = 4; for (let x = 8; x < w; x += 64) c.strokeRect(x, h * 0.66, 48, h * 0.28);
+  c.fillStyle = '#6a4a28'; c.fillRect(0, h * 0.6, w, 6);
+}, true);
+wallTex.repeat.set(6, 1);
+const walls = new THREE.Mesh(new THREE.BoxGeometry(1200, 420, 1000), new THREE.MeshStandardMaterial({ map: wallTex, side: THREE.BackSide, roughness: 0.9 }));
+walls.position.set(TW / 2, 132, TH / 2); room.add(walls);
+for (const [x, z] of [[-460, -200], [-460, 300], [720, -200], [720, 300], [TW / 2, -480], [TW / 2, 600]]) {
+  const sconce = new THREE.Mesh(new THREE.CylinderGeometry(6, 9, 14, 12, 1, true), new THREE.MeshBasicMaterial({ color: 0xffd8a0, side: THREE.DoubleSide }));
+  sconce.position.set(x, 120, z); room.add(sconce);
+  const halo = glowLamp(0xffc880, 120); halo.position.set(x, 120, z); room.add(halo);
+}
+// Cue rack on the far wall.
+const rack = new THREE.Group();
+const rackWood = new THREE.MeshStandardMaterial({ color: 0x5a3418, roughness: 0.5 });
+rack.add(new THREE.Mesh(new THREE.BoxGeometry(110, 8, 10), rackWood));
+const rackB = new THREE.Mesh(new THREE.BoxGeometry(110, 8, 10), rackWood); rackB.position.y = -120; rack.add(rackB);
+for (let i = 0; i < 6; i++) { const cue = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 2, 150, 8), new THREE.MeshStandardMaterial({ color: i % 2 ? 0xd8b880 : 0x8a5a30, roughness: 0.4 })); cue.position.set(-45 + i * 18, -55, 4); rack.add(cue); }
+rack.position.set(TW / 2, 150, -490); room.add(rack);
+// Table body: apron under the rails, four turned legs.
+const apron = new THREE.Mesh(new THREE.BoxGeometry(TW + 36, 18, TH + 36), woodMat);
+apron.position.set(TW / 2, -10.5, TH / 2); apron.castShadow = apron.receiveShadow = true; room.add(apron);
+for (const [x, z] of [[-4, -4], [TW + 4, -4], [-4, TH + 4], [TW + 4, TH + 4], [TW / 2, -4], [TW / 2, TH + 4]]) {
+  const leg = new THREE.Mesh(new THREE.CylinderGeometry(7, 10, 62, 12), woodMat);
+  leg.position.set(x, -48, z); leg.castShadow = true; room.add(leg);
+}
+scene.add(room);
+
+function glowLamp(colour, size) {
+  const t = canvasTexture(64, 64, (c) => { const g2 = c.createRadialGradient(32, 32, 0, 32, 32, 32); g2.addColorStop(0, 'rgba(255,255,255,1)'); g2.addColorStop(0.4, 'rgba(255,255,255,.35)'); g2.addColorStop(1, 'rgba(255,255,255,0)'); c.fillStyle = g2; c.fillRect(0, 0, 64, 64); });
+  const s2 = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, color: colour, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true }));
+  s2.scale.set(size, size, 1);
+  return s2;
+}
+
+// Reflections for the balls: the room as seen from the table, captured once.
+let envTarget = null;
+function roomEnv() {
+  if (envTarget) return envTarget.texture;
+  envTarget = new THREE.WebGLCubeRenderTarget(128);
+  const cc = new THREE.CubeCamera(1, 2000, envTarget);
+  cc.position.set(TW / 2, 30, TH / 2);
+  cc.update(renderer, scene);
+  return envTarget.texture;
+}
+
 /* ------------------------------------------------------------------ balls */
 
 function ballTexture(n) {
@@ -437,7 +507,8 @@ const ballGeo = new THREE.SphereGeometry(R, 28, 20);
 const ballMeshes = [];
 function meshForBall(b) {
   if (!ballMeshes[b.n]) {
-    const m = new THREE.Mesh(ballGeo, new THREE.MeshPhysicalMaterial({ map: ballTexture(b.n), roughness: 0.12, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.05 }));
+    const m = new THREE.Mesh(ballGeo, new THREE.MeshPhysicalMaterial({ map: ballTexture(b.n), roughness: 0.12, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.05, envMap: roomEnv(), envMapIntensity: 0.9 }));
+    m.castShadow = true;
     m.quaternion.setFromEuler(new THREE.Euler(Math.random() * 6, Math.random() * 6, 0));
     m.last = { x: b.x, y: b.y };
     scene.add(m);
@@ -500,6 +571,9 @@ let menuA = 0;
 function render3d(now) {
   const dt = clock(now);
   if (!balls) balls = rack8();
+  // Balls from an earlier rack keep their meshes; only this rack's show.
+  for (const m of ballMeshes) if (m) m.visible = false;
+  for (const s of shadows) if (s) s.visible = false;
   balls.forEach((b, i) => {
     const m = meshForBall(b);
     m.visible = b.on;

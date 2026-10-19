@@ -2,8 +2,8 @@
 // cache. One versioned set, served cache-first: mixing new scripts with old
 // HTML kills the app at start. The version follows VERSION in game.js.
 const PREFIX = 'glasspool-';
-const CACHE = PREFIX + '2.0.0';
-const SHELL = ['./', './index.html', './kit.js?v=2.0.0', './game.js?v=2.0.0', './manifest.webmanifest', './icon-96.png', './icon-192.png', './three.module.min.js', './kit3d.js'];
+const CACHE = PREFIX + '3.0.0';
+const SHELL = ['./', './index.html', './kit.js?v=3.0.0', './game.js?v=3.0.0', './manifest.webmanifest', './icon-96.png', './icon-192.png', './three.module.min.js', './kit3d.js'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
